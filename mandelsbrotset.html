@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Mandelbrot WebGL1 Zoom</title>
+<style>
+body { margin:0; overflow:hidden; background:black; color:#0f0; font-family: monospace; }
+#ui { position: fixed; top: 5px; left: 5px; z-index: 10; }
+canvas { display:block; cursor: crosshair; }
+</style>
+</head>
+<body>
+<script>
+    alert("Due to webgl 32 bit limitations, it has limited zoom!");
+</script>
+<div id="ui">
+  FPS: <span id="fps">0</span><br>
+  Center: <span id="coord">0 + 0i</span><br>
+  Zoom: <span id="zoom">1×</span>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById("c");
+const fpsEl = document.getElementById("fps");
+const coordEl = document.getElementById("coord");
+const zoomEl = document.getElementById("zoom");
+
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+const gl = canvas.getContext("webgl");
+if (!gl) { alert("WebGL not supported"); throw "NO_WEBGL"; }
+
+// ---- Shaders ----
+const vsSource = `
+attribute vec2 aPos;
+void main(){ gl_Position = vec4(aPos,0,1); }
+`;
+
+const fsSource = `
+precision highp float;
+uniform vec2 u_resolution;
+uniform vec2 u_center;
+uniform float u_scale;
+
+vec3 palette(float t){
+    return vec3(
+        0.5 + 0.5*cos(6.2831*(t+0.0)),
+        0.5 + 0.5*cos(6.2831*(t+0.33)),
+        0.5 + 0.5*cos(6.2831*(t+0.67))
+    );
+}
+
+void main(){
+    vec2 c = u_center + (gl_FragCoord.xy - u_resolution*0.5) * u_scale;
+    vec2 z = vec2(0.0);
+    float iter = 0.0;
+    const float MAX_ITER = 300.0;
+    for(float i=0.0;i<MAX_ITER;i++){
+        if(dot(z,z) > 4.0) break;
+        z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + c;
+        iter += 1.0;
+    }
+    if(iter>=MAX_ITER){
+        gl_FragColor = vec4(0.0,0.0,0.0,1.0); // black inside set
+    } else {
+        float t = iter/MAX_ITER;
+        gl_FragColor = vec4(palette(t),1.0);
+    }
+}
+`;
+
+// ---- Compile ----
+function compileShader(type, src){
+    const s = gl.createShader(type);
+    gl.shaderSource(s,src);
+    gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+        console.error(gl.getShaderInfoLog(s));
+    return s;
+}
+
+const vs = compileShader(gl.VERTEX_SHADER,vsSource);
+const fs = compileShader(gl.FRAGMENT_SHADER,fsSource);
+const prog = gl.createProgram();
+gl.attachShader(prog,vs);
+gl.attachShader(prog,fs);
+gl.linkProgram(prog);
+gl.useProgram(prog);
+
+// ---- Quad ----
+const buf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+const posLoc = gl.getAttribLocation(prog,"aPos");
+gl.enableVertexAttribArray(posLoc);
+gl.vertexAttribPointer(posLoc,2,gl.FLOAT,false,0,0);
+
+// ---- Uniforms ----
+const resLoc = gl.getUniformLocation(prog,"u_resolution");
+const centerLoc = gl.getUniformLocation(prog,"u_center");
+const scaleLoc = gl.getUniformLocation(prog,"u_scale");
+
+// ---- State ----
+let centerX = -0.5, centerY = 0.0;
+let targetCX = centerX, targetCY = centerY;
+let scale = 4.0 / canvas.width;
+let targetScale = scale;
+
+// ---- Draw ----
+function draw(){
+    gl.viewport(0,0,canvas.width,canvas.height);
+    gl.uniform2f(resLoc,canvas.width,canvas.height);
+    gl.uniform2f(centerLoc,centerX,centerY);
+    gl.uniform1f(scaleLoc,scale);
+    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+
+// ---- Interaction ----
+canvas.onwheel = e => {
+    e.preventDefault();
+    const mx = e.clientX;
+    const my = e.clientY;
+    const wx = centerX + (mx - canvas.width/2)*scale;
+    const wy = centerY + (my - canvas.height/2)*scale;
+
+    const zoom = e.deltaY<0?0.8:1.25;
+    targetScale *= zoom;
+    targetCX = wx + (centerX - wx)*zoom;
+    targetCY = wy + (centerY - wy)*zoom;
+};
+
+let dragging=false,lastX,lastY;
+canvas.onmousedown = e => { dragging=true; lastX=e.clientX; lastY=e.clientY; };
+canvas.onmouseup = () => dragging=false;
+canvas.onmousemove = e=>{
+    if(!dragging) return;
+    const dx = (e.clientX-lastX)*scale;
+    const dy = (e.clientY-lastY)*scale;
+    targetCX -= dx;
+    targetCY += dy;
+    lastX=e.clientX; lastY=e.clientY;
+};
+canvas.oncontextmenu = e=>e.preventDefault();
+
+window.onresize = ()=>{
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+    scale = targetScale = 4.0 / canvas.width;
+};
+
+// ---- Animation Loop ----
+let then=performance.now(), frames=0, acc=0;
+function loop(now){
+    centerX += (targetCX - centerX)*0.15;
+    centerY += (targetCY - centerY)*0.15;
+    scale += (targetScale - scale)*0.15;
+
+    draw();
+
+    frames++;
+    acc += now-then;
+    then=now;
+    if(acc>500){
+        fpsEl.textContent = Math.round(frames*1000/acc);
+        coordEl.textContent = centerX.toFixed(6)+" + "+centerY.toFixed(6)+"i";
+        zoomEl.textContent = (4.0/scale).toFixed(2)+"×";
+        frames=0; acc=0;
+    }
+
+    requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
