@@ -1,22 +1,38 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Mandelbrotset</title>
+<title>Mandelbrot Set</title>
 <style>
-body { margin:0; overflow:hidden; background:black; color:#0f0; font-family: monospace; }
-#ui { position: fixed; top: 5px; left: 5px; z-index: 10; }
-canvas { display:block; cursor: crosshair; }
+html, body {
+  margin: 0;
+  overflow: hidden;
+  background: black;
+  touch-action: none;
+}
+#ui {
+  position: fixed;
+  top: 5px;
+  left: 5px;
+  color: #0f0;
+  font-family: monospace;
+  z-index: 10;
+}
+canvas {
+  display: block;
+  cursor: grab;
+}
+canvas:active {
+  cursor: grabbing;
+}
 </style>
 </head>
 <body>
-<script>
-    alert("Due to webgl 32 bit limitations, it has limited zoom!");
-</script>
+
 <div id="ui">
-  FPS: <span id="fps">0</span><br>
-  Center: <span id="coord">0 + 0i</span><br>
-  Zoom: <span id="zoom">1×</span>
+FPS: <span id="fps">0</span><br>
+Center: <span id="coord">0 + 0i</span><br>
+Zoom: <span id="zoom">1×</span>
 </div>
 
 <canvas id="c"></canvas>
@@ -27,152 +43,202 @@ const fpsEl = document.getElementById("fps");
 const coordEl = document.getElementById("coord");
 const zoomEl = document.getElementById("zoom");
 
-canvas.width = window.innerWidth;
-canvas.height = window.innerHeight;
+/* ---------- HiDPI ---------- */
+const dpr = Math.max(1, window.devicePixelRatio || 1);
 
-const gl = canvas.getContext("webgl");
-if (!gl) { alert("WebGL not supported"); throw "NO_WEBGL"; }
+function resize() {
+  canvas.width  = innerWidth * dpr;
+  canvas.height = innerHeight * dpr;
+  canvas.style.width  = innerWidth + "px";
+  canvas.style.height = innerHeight + "px";
+}
+resize();
 
-// ---- Shaders ----
+/* ---------- WebGL ---------- */
+const gl = canvas.getContext("webgl", { antialias:false });
+if (!gl) {
+  alert("WebGL not supported");
+  throw 0;
+}
+
+/* ---------- Shaders ---------- */
 const vsSource = `
-attribute vec2 aPos;
-void main(){ gl_Position = vec4(aPos,0,1); }
+attribute vec2 a;
+void main(){
+  gl_Position = vec4(a,0.0,1.0);
+}
 `;
 
 const fsSource = `
 precision highp float;
-uniform vec2 u_resolution;
-uniform vec2 u_center;
-uniform float u_scale;
+
+uniform vec2 r;
+uniform vec2 c;
+uniform float s;
 
 vec3 palette(float t){
-    return vec3(
-        0.5 + 0.5*cos(6.2831*(t+0.0)),
-        0.5 + 0.5*cos(6.2831*(t+0.33)),
-        0.5 + 0.5*cos(6.2831*(t+0.67))
-    );
+  return 0.5 + 0.5*cos(6.2831*(t + vec3(0.0,0.33,0.67)));
+}
+
+float mandel(vec2 p){
+  vec2 z = vec2(0.0);
+  float i = 0.0;
+  const float MAX = 300.0;
+
+  for(float k=0.0;k<MAX;k++){
+    if(dot(z,z)>4.0) break;
+    z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + p;
+    i++;
+  }
+  if(i >= MAX) return -1.0;
+  return i - log2(log(length(z))) * 0.7;
 }
 
 void main(){
-    vec2 c = u_center + (gl_FragCoord.xy - u_resolution*0.5) * u_scale;
-    vec2 z = vec2(0.0);
-    float iter = 0.0;
-    const float MAX_ITER = 300.0;
-    for(float i=0.0;i<MAX_ITER;i++){
-        if(dot(z,z) > 4.0) break;
-        z = vec2(z.x*z.x - z.y*z.y, 2.0*z.x*z.y) + c;
-        iter += 1.0;
-    }
-    if(iter>=MAX_ITER){
-        gl_FragColor = vec4(0.0,0.0,0.0,1.0); // black inside set
-    } else {
-        float t = iter/MAX_ITER;
-        gl_FragColor = vec4(palette(t),1.0);
-    }
+  vec2 px = gl_FragCoord.xy;
+  vec3 col = vec3(0.0);
+
+  // ---- 4x Supersampling ----
+  vec2 offs[4];
+  offs[0]=vec2(0.25,0.25);
+  offs[1]=vec2(0.75,0.25);
+  offs[2]=vec2(0.25,0.75);
+  offs[3]=vec2(0.75,0.75);
+
+  for(int i=0;i<4;i++){
+    vec2 sp = px + offs[i];
+    vec2 p = c + (sp - r*0.5) * s;
+    float m = mandel(p);
+    if(m >= 0.0)
+      col += palette(m/300.0);
+  }
+
+  gl_FragColor = vec4(col / 4.0, 1.0);
 }
 `;
 
-// ---- Compile ----
-function compileShader(type, src){
-    const s = gl.createShader(type);
-    gl.shaderSource(s,src);
-    gl.compileShader(s);
-    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
-        console.error(gl.getShaderInfoLog(s));
-    return s;
+/* ---------- Compile ---------- */
+function compile(type, src){
+  const sh = gl.createShader(type);
+  gl.shaderSource(sh, src);
+  gl.compileShader(sh);
+  return sh;
 }
 
-const vs = compileShader(gl.VERTEX_SHADER,vsSource);
-const fs = compileShader(gl.FRAGMENT_SHADER,fsSource);
 const prog = gl.createProgram();
-gl.attachShader(prog,vs);
-gl.attachShader(prog,fs);
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vsSource));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fsSource));
 gl.linkProgram(prog);
 gl.useProgram(prog);
 
-// ---- Quad ----
+/* ---------- Quad ---------- */
 const buf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
-const posLoc = gl.getAttribLocation(prog,"aPos");
-gl.enableVertexAttribArray(posLoc);
-gl.vertexAttribPointer(posLoc,2,gl.FLOAT,false,0,0);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+  -1,-1, 1,-1,
+  -1, 1, 1, 1
+]), gl.STATIC_DRAW);
 
-// ---- Uniforms ----
-const resLoc = gl.getUniformLocation(prog,"u_resolution");
-const centerLoc = gl.getUniformLocation(prog,"u_center");
-const scaleLoc = gl.getUniformLocation(prog,"u_scale");
+const aLoc = gl.getAttribLocation(prog, "a");
+gl.enableVertexAttribArray(aLoc);
+gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
 
-// ---- State ----
-let centerX = -0.5, centerY = 0.0;
-let targetCX = centerX, targetCY = centerY;
-let scale = 4.0 / canvas.width;
-let targetScale = scale;
+/* ---------- Uniforms ---------- */
+const rLoc = gl.getUniformLocation(prog, "r");
+const cLoc = gl.getUniformLocation(prog, "c");
+const sLoc = gl.getUniformLocation(prog, "s");
 
-// ---- Draw ----
-function draw(){
-    gl.viewport(0,0,canvas.width,canvas.height);
-    gl.uniform2f(resLoc,canvas.width,canvas.height);
-    gl.uniform2f(centerLoc,centerX,centerY);
-    gl.uniform1f(scaleLoc,scale);
-    gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
-}
+/* ---------- State ---------- */
+let cx = -0.5, cy = 0.0;
+let tcx = cx, tcy = cy;
 
-// ---- Interaction ----
-canvas.onwheel = e => {
-    e.preventDefault();
-    const mx = e.clientX;
-    const my = e.clientY;
-    const wx = centerX + (mx - canvas.width/2)*scale;
-    const wy = centerY + (my - canvas.height/2)*scale;
+let s = 4.0 / canvas.width;
+let ts = s;
 
-    const zoom = e.deltaY<0?0.8:1.25;
-    targetScale *= zoom;
-    targetCX = wx + (centerX - wx)*zoom;
-    targetCY = wy + (centerY - wy)*zoom;
-};
+/* ---------- Mouse Wheel Zoom ---------- */
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const mx = e.clientX * dpr;
+  const my = e.clientY * dpr;
 
-let dragging=false,lastX,lastY;
-canvas.onmousedown = e => { dragging=true; lastX=e.clientX; lastY=e.clientY; };
-canvas.onmouseup = () => dragging=false;
-canvas.onmousemove = e=>{
-    if(!dragging) return;
-    const dx = (e.clientX-lastX)*scale;
-    const dy = (e.clientY-lastY)*scale;
-    targetCX -= dx;
-    targetCY += dy;
-    lastX=e.clientX; lastY=e.clientY;
-};
-canvas.oncontextmenu = e=>e.preventDefault();
+  const wx = cx + (mx - canvas.width/2) * s;
+  const wy = cy + (my - canvas.height/2) * s;
 
-window.onresize = ()=>{
-    canvas.width = innerWidth;
-    canvas.height = innerHeight;
-    scale = targetScale = 4.0 / canvas.width;
-};
+  const z = e.deltaY < 0 ? 0.8 : 1.25;
+  ts *= z;
+  tcx = wx + (cx - wx) * z;
+  tcy = wy + (cy - wy) * z;
+});
 
-// ---- Animation Loop ----
-let then=performance.now(), frames=0, acc=0;
+/* ---------- Mouse Drag ---------- */
+let dragging=false, lastX=0, lastY=0;
+
+canvas.addEventListener("mousedown", e=>{
+  dragging=true;
+  lastX=e.clientX*dpr;
+  lastY=e.clientY*dpr;
+});
+window.addEventListener("mouseup", ()=>dragging=false);
+
+window.addEventListener("mousemove", e=>{
+  if(!dragging) return;
+  const x=e.clientX*dpr, y=e.clientY*dpr;
+  tcx -= (x-lastX)*s;
+  tcy += (y-lastY)*s;
+  lastX=x; lastY=y;
+});
+canvas.oncontextmenu=e=>e.preventDefault();
+
+/* ---------- Touch ---------- */
+let touches=[];
+canvas.addEventListener("touchstart", e=>{
+  e.preventDefault();
+  touches=[...e.touches];
+});
+canvas.addEventListener("touchmove", e=>{
+  e.preventDefault();
+  if(e.touches.length==1 && touches.length==1){
+    tcx -= (e.touches[0].clientX - touches[0].clientX)*s;
+    tcy += (e.touches[0].clientY - touches[0].clientY)*s;
+  }
+  if(e.touches.length==2 && touches.length==2){
+    const d=a=>Math.hypot(
+      a[0].clientX-a[1].clientX,
+      a[0].clientY-a[1].clientY
+    );
+    ts *= d(touches)/d([...e.touches]);
+  }
+  touches=[...e.touches];
+});
+
+/* ---------- Render Loop ---------- */
+let last=performance.now(), frames=0, acc=0;
 function loop(now){
-    centerX += (targetCX - centerX)*0.15;
-    centerY += (targetCY - centerY)*0.15;
-    scale += (targetScale - scale)*0.15;
+  cx += (tcx-cx)*0.15;
+  cy += (tcy-cy)*0.15;
+  s  += (ts-s)*0.15;
 
-    draw();
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.uniform2f(rLoc, canvas.width, canvas.height);
+  gl.uniform2f(cLoc, cx, cy);
+  gl.uniform1f(sLoc, s);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 
-    frames++;
-    acc += now-then;
-    then=now;
-    if(acc>500){
-        fpsEl.textContent = Math.round(frames*1000/acc);
-        coordEl.textContent = centerX.toFixed(6)+" + "+centerY.toFixed(6)+"i";
-        zoomEl.textContent = (4.0/scale).toFixed(2)+"×";
-        frames=0; acc=0;
-    }
-
-    requestAnimationFrame(loop);
+  frames++; acc+=now-last; last=now;
+  if(acc>500){
+    fpsEl.textContent=Math.round(frames*1000/acc);
+    coordEl.textContent=cx.toFixed(6)+" + "+cy.toFixed(6)+"i";
+    zoomEl.textContent=(4/s).toFixed(2)+"×";
+    frames=0; acc=0;
+  }
+  requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+window.addEventListener("resize", ()=>{
+  resize();
+  ts = 4.0 / canvas.width;
+});
 </script>
 </body>
 </html>
